@@ -1,0 +1,9 @@
+export { default as FaqsPage } from './faq';
+export { default as AboutPage } from './about';
+export { default as LandingPage } from './landing';
+export { default as FeaturesPage } from './features';
+export { default as TransformPage } from './transform';
+export { default as DocumentationPage } from './documentation';
+export { default as PrivacyPolicyPage } from './privacy_policy';
+export { default as TermsOfServicePage } from './terms_of_service';
+export { default as PageNotFound } from './page_not_found';

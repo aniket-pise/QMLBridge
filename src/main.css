@@ -1,0 +1,24 @@
+@import url('./utils/constants/fonts.css');
+
+* {
+  font-family: 'Poppins';
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #FFFFFF;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #161A1D;
+  }
+}
