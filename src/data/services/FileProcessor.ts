@@ -11,7 +11,7 @@ import {
 } from '../../utils/exceptions';
 
 import FontDownloader from './FontDownload';
-import QmlTransformer, { TransformationOptions } from './Transform';
+import QmlTransformer, { QmlDirectory, QmlValue, TransformationOptions } from './Transform';
 
 /**
  * FileProcessor orchestrates the complete QtBridge file lifecycle.
@@ -431,6 +431,36 @@ class FileProcessor {
 	}
 
 	/**
+	 * Recursively counts all QML files within a nested directory structure.
+	 * 
+	 * This method traverses through all levels of a QmlDirectory object,
+	 * counting both individual QML files at leaf nodes and recursively
+	 * processing nested subdirectories to provide a complete file count.
+	 * 
+	 * @param qmlFiles - The QML directory structure to analyze, which may contain
+	 *                   both file content strings and nested directory objects
+	 * @returns The total number of QML files found in the directory and all its subdirectories
+	 */
+	private filesCount(qmlFiles: QmlDirectory): number {
+		// Recursively counts the total number of QML files in a nested directory structure
+		let count = 0;
+
+		// Iterate through all values in the current directory level
+		Object.values(qmlFiles).forEach((value: QmlValue) => {
+			if (typeof value === 'object' && value !== null) {
+				// Recursively count files in nested directories
+				count += this.filesCount(value);
+			} else {
+				// Count leaf nodes as individual QML files
+				count++;
+			}
+		});
+
+		// Return the total count of QML files in this directory and all subdirectories
+		return count;
+	}
+
+	/**
 	 * Executes the complete QtBridge file processing pipeline.
 	 *
 	 * This method orchestrates all major processing stages, including:
@@ -525,7 +555,7 @@ class FileProcessor {
 				progressCallback(70);
 
 				// Log: QML generation completed with file count
-				updateLogs(`QML generation complete: ${Object.keys(qmlFiles).length} file(s) created.`);
+				updateLogs(`QML generation complete: ${this.filesCount(qmlFiles)} file(s) created.`);
 
 				// Log: Persisting generated QML files
 				updateLogs('Saving generated QML files to database...');
@@ -654,57 +684,125 @@ class FileProcessor {
 			const zip = new JSZip();
 
 			/**
-			 * Helper function to add content from IndexedDB to the ZIP archive
+			 * Recursively traverses a QML directory structure and adds all QML files to a ZIP archive.
 			 * 
-			 * @param storeName - Name of the IndexedDB object store
-			 * @param folderName - Optional folder name within the ZIP (for organization)
-			 * @returns boolean indicating if content was successfully added
+			 * This helper function processes nested QML content by distinguishing between:
+			 * - Leaf nodes (string content) which become individual .qml files
+			 * - Directory nodes (objects) which create subfolders in the ZIP structure
+			 * 
+			 * The function preserves the original directory hierarchy within the ZIP archive
+			 * and tracks the total number of files added for progress reporting.
+			 * 
+			 * @param content - The QML content to process, which may be a string or nested object structure
+			 * @param folder - The current JSZip folder instance to add files to
+			 * @param basePath - The accumulated path for nested directories (used internally for recursion)
+			 * @returns Promise that resolves with the total number of QML files added in this branch
+			 */
+			const addQmlContentToZip = async (content: any, folder: JSZip, basePath: string = ''): Promise<number> => {
+				// Counter for tracking total QML files added in this recursive branch
+				let filesAdded = 0;
+
+				// Process each key-value pair in the current content level
+				for (const [key, value] of Object.entries(content as { [key: string]: any })) {
+					if (typeof value === 'string') {
+						// Leaf node: Create QML file with .qml extension
+						folder.file(`${basePath}${key}.qml`, value);
+
+						// Increment counter for each file created
+						filesAdded++;
+					} else if (typeof value === 'object' && value !== null) {
+						// Nested directory: Create subfolder for organizational structure
+						const subFolder = folder.folder(key);
+
+						// Recursively process contents of subdirectory if folder creation succeeded
+						if (subFolder) {
+							filesAdded += await addQmlContentToZip(value, subFolder);
+						}
+					}
+				}
+
+				// Return total files added from this directory level and all subdirectories
+				return filesAdded;
+			};
+
+			/**
+			 * Retrieves and adds file content from a specific IndexedDB object store to the ZIP archive.
+			 * 
+			 * This function handles multiple file storage patterns:
+			 * - Flat file structures with direct Uint8Array content
+			 * - Nested directory structures with organizational subfolders
+			 * - Special handling for QML files which maintain their directory hierarchy
+			 * 
+			 * The function supports optional folder grouping to organize different file types
+			 * (e.g., images, fonts) within separate ZIP directories.
+			 * 
+			 * @param storeName - Name of the IndexedDB object store containing files to add
+			 * @param folderName - Optional folder name within the ZIP for organizational grouping
+			 * @returns Promise that resolves with a boolean indicating if any content was successfully added
+			 * 
+			 * @throws {DatabaseException} If the database read operation fails
 			 */
 			const addContentToZip = async (storeName: string, folderName?: string): Promise<boolean> => {
-				// Fetch the content from the IndexedDB
+				// Fetch the content from the IndexedDB object store
 				const store = await this.getFromDB('Files', storeName);
+
+				// Track total files added to this folder for validation
+				let filesAdded = 0;
 
 				// Check if the store has content to add
 				if (store?.content) {
-					// Use folder name if specified
+					// Use folder name if specified, otherwise add to root ZIP directory
 					const folder = folderName ? zip.folder(folderName) : zip;
 
-					// Check if the folder is valid
+					// Check if the folder is valid before attempting file operations
 					if (folder) {
-						// Iterate through the content and add files to the ZIP
-						for (const [fileName, fileData] of Object.entries(store.content as { [key: string]: any })) {
-							// Check if the fileData is a binary (Uint8Array) and add it
-							if (fileData instanceof Uint8Array) {
-								folder?.file(fileName, fileData as Uint8Array, { binary: true });
-								return true;
-							}
+						// Special handling for QML files due to their nested directory structure
+						if (storeName === 'QmlFiles') {
+							// Recursively add QML files and directories to the ZIP archive
+							filesAdded = await addQmlContentToZip(store.content, zip);
+						} else {
+							// Iterate through the content and add files to the ZIP
+							for (const [fileName, fileData] of Object.entries(store.content as { [key: string]: any })) {
+								// Handle binary file data stored as Uint8Array
+								if (fileData instanceof Uint8Array) {
+									// Add binary file to ZIP with preserved filename
+									folder?.file(fileName, fileData, { binary: true });
 
-							// Handle other types of file data
-							switch (typeof fileData) {
-								case 'string':
-									// Add string data as .qml file
-									folder?.file(`${fileName}.qml`, fileData as string);
-									return true;
-								case 'object':
-									// Handle nested objects and add them as subfolders
+									// Increment the file counter for this folder
+									filesAdded++;
+
+									// Skip further processing for this entry
+									continue;
+								}
+
+								// Handle nested directory structures (objects containing files)
+								if (typeof fileData === 'object') {
+									// Create subfolder within ZIP for organizational grouping
 									const subFolder = folder.folder(fileName);
 
-									// Add subfolder files
+									// Add files from subdirectory if subfolder was created successfully
 									if (subFolder) {
-										for (const [subFileName, subFileData] of Object.entries(fileData as { [key: string]: Uint8Array })) {
-											subFolder.file(subFileName, subFileData as Uint8Array, { binary: true });
+										for (const [subFileName, subFileData] of Object.entries(fileData as { [key: string]: any })) {
+											if (subFileData instanceof Uint8Array) {
+												// Add binary file to subfolder with preserved filename
+												subFolder.file(subFileName, subFileData, { binary: true });
+
+												// Increment the total file counter
+												filesAdded++;
+											}
 										}
 									}
-									return true;
-								default:
-									break;
+
+									// Continue to next file/directory in iteration
+									continue;
+								}
 							}
 						}
 					}
 				}
 
-				// Return false if no content was found to add
-				return false;
+				// Return true if any files were added, false otherwise
+				return filesAdded > 0;
 			}
 
 			// Initial progress update to 10%
